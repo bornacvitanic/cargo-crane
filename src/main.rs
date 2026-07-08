@@ -8,6 +8,7 @@
 //! manifests/paths) plugs into `plan.rs` next.
 
 mod analyze;
+mod apply;
 mod cli;
 mod module;
 mod plan;
@@ -49,7 +50,17 @@ fn run(cfg: cli::Config) -> Result<(), String> {
     let analysis = analyze::analyze(pkg, &module)?;
     let plan = plan::build(&ws, pkg, &module, analysis);
 
-    if cfg.list {
+    if cfg.apply {
+        let log = apply::apply(&ws, pkg, &plan)?;
+        println!(
+            "extracted {}::{} → {}",
+            plan.source_crate, plan.module, plan.new_crate
+        );
+        for line in &log {
+            println!("  ✓ {line}");
+        }
+        println!("\nnext: run `cargo check` to verify the workspace still builds.");
+    } else if cfg.list {
         plan.print_plain();
     } else {
         plan.print();

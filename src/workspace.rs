@@ -3,7 +3,7 @@
 //! it — see the freight plan.) We pull the target package's crate root, source
 //! dir, and declared dependencies, which the analysis then works against.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use serde::Deserialize;
@@ -13,12 +13,24 @@ use crate::cli::Config;
 /// A workspace member we can operate on.
 pub struct Package {
     pub name: String,
+    /// The directory holding the crate's `Cargo.toml`.
+    pub manifest_dir: PathBuf,
     /// The crate root file (`src/lib.rs` or `src/main.rs`).
     pub crate_root: PathBuf,
     /// The directory the crate root lives in (`src/`).
     pub src_dir: PathBuf,
+    /// The crate's Rust edition (reproduced in an extracted crate).
+    pub edition: String,
+    /// The crate's license, if declared (reproduced in an extracted crate).
+    pub license: Option<String>,
     /// Declared dependencies (normal/dev/build).
     pub deps: Vec<Dep>,
+}
+
+impl Package {
+    pub fn manifest_path(&self) -> PathBuf {
+        self.manifest_dir.join("Cargo.toml")
+    }
 }
 
 /// One declared dependency, enough to decide whether the moved code needs it
@@ -93,6 +105,7 @@ pub fn load(cfg: &Config) -> Result<Workspace, String> {
 fn package_from_meta(p: &MetaPackage) -> Option<Package> {
     let crate_root = pick_crate_root(&p.targets)?;
     let src_dir = crate_root.parent()?.to_path_buf();
+    let manifest_dir = Path::new(&p.manifest_path).parent()?.to_path_buf();
     let deps = p
         .dependencies
         .iter()
@@ -106,8 +119,11 @@ fn package_from_meta(p: &MetaPackage) -> Option<Package> {
         .collect();
     Some(Package {
         name: p.name.clone(),
+        manifest_dir,
         crate_root,
         src_dir,
+        edition: p.edition.clone().unwrap_or_else(|| "2021".to_string()),
+        license: p.license.clone(),
         deps,
     })
 }
@@ -131,6 +147,11 @@ struct Metadata {
 #[derive(Deserialize)]
 struct MetaPackage {
     name: String,
+    manifest_path: String,
+    #[serde(default)]
+    edition: Option<String>,
+    #[serde(default)]
+    license: Option<String>,
     targets: Vec<MetaTarget>,
     #[serde(default)]
     dependencies: Vec<MetaDependency>,

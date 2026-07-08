@@ -11,6 +11,9 @@ pub struct Config {
     pub manifest_path: Option<PathBuf>,
     /// Print the plan as plain text (no decoration) — the scriptable mode.
     pub list: bool,
+    /// Actually perform the extraction (v0: clean-leaf, single-file only)
+    /// instead of just printing the plan.
+    pub apply: bool,
 }
 
 pub enum Cli {
@@ -29,12 +32,13 @@ EXAMPLE:
     cargo crane cargo-bay::discover     # analyse lifting cargo-bay's `discover` module
 
 OPTIONS:
+    --apply               Perform the extraction (v0: clean-leaf, single-file only)
     --manifest-path <P>   Use the workspace that contains this Cargo.toml
     --list                Print the extraction plan as plain text
     -h, --help            Show this help
 
-v0 analyses the extraction and prints a plan (dry-run). It does not yet write
-any files.
+Without --apply, cargo-crane only analyses the extraction and prints a plan
+(dry-run). --apply writes files, so run it on a clean git tree.
 ";
 
 pub fn usage() -> &'static str {
@@ -53,12 +57,14 @@ pub fn parse<I: Iterator<Item = String>>(mut args: I) -> Cli {
     let mut target: Option<String> = None;
     let mut manifest_path = None;
     let mut list = false;
+    let mut apply = false;
 
     let mut cur = next;
     while let Some(arg) = cur {
         match arg.as_str() {
             "-h" | "--help" => return Cli::Help,
             "--list" => list = true,
+            "--apply" => apply = true,
             "--manifest-path" => match args.next() {
                 Some(v) => manifest_path = Some(v.into()),
                 None => return Cli::Error("--manifest-path needs a value".into()),
@@ -81,6 +87,7 @@ pub fn parse<I: Iterator<Item = String>>(mut args: I) -> Cli {
             target,
             manifest_path,
             list,
+            apply,
         }),
         None => Cli::Error("missing <package>::<module> to extract".into()),
     }

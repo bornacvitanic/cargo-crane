@@ -14,3 +14,5 @@ syn = { version = "2", features = ["full", "visit"] }
 # Parse `cargo metadata` for the workspace, package sources, and declared deps.
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Edit existing Cargo.toml files (add dep, register member) preserving format.
+toml_edit = "0.22"
