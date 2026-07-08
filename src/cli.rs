@@ -6,7 +6,8 @@ use std::path::PathBuf;
 
 pub struct Config {
     /// The module to lift, as `<package>::<module>` (e.g. `cargo-bay::discover`).
-    pub target: String,
+    /// Absent means: open the interactive browser.
+    pub target: Option<String>,
     /// Point cargo metadata at a specific workspace instead of the cwd.
     pub manifest_path: Option<PathBuf>,
     /// Print the plan as plain text (no decoration) — the scriptable mode.
@@ -27,9 +28,13 @@ const USAGE: &str = "\
 cargo-crane — lift a module out into its own crate
 
 USAGE:
-    cargo crane <package>::<module> [OPTIONS]   (or: cargo-crane <package>::<module>)
+    cargo crane [<package>::<module>] [OPTIONS]   (or invoke cargo-crane directly)
+
+With no target, cargo-crane opens an interactive browser (TUI) of every module
+in the workspace. With a target it prints that module's extraction plan.
 
 EXAMPLE:
+    cargo crane                         # browse and lift interactively
     cargo crane cargo-bay::discover     # analyse lifting cargo-bay's `discover` module
 
 OPTIONS:
@@ -87,16 +92,13 @@ pub fn parse<I: Iterator<Item = String>>(mut args: I) -> Cli {
         cur = args.next();
     }
 
-    match target {
-        Some(target) => Cli::Run(Config {
-            target,
-            manifest_path,
-            list,
-            apply,
-            allow_dirty,
-        }),
-        None => Cli::Error("missing <package>::<module> to extract".into()),
-    }
+    Cli::Run(Config {
+        target,
+        manifest_path,
+        list,
+        apply,
+        allow_dirty,
+    })
 }
 
 /// Split a `pkg::module` target into its two halves.

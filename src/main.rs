@@ -13,6 +13,7 @@ mod cli;
 mod closure;
 mod module;
 mod plan;
+mod tui;
 mod workspace;
 
 use cli::Cli;
@@ -37,9 +38,17 @@ fn main() {
 }
 
 fn run(cfg: cli::Config) -> Result<(), String> {
-    let (pkg_name, module_name) = cli::split_target(&cfg.target)?;
-
     let ws = workspace::load(&cfg)?;
+
+    // No target → open the interactive browser.
+    let Some(target) = cfg.target.clone() else {
+        if cfg.list || cfg.apply {
+            return Err("--list / --apply need a <package>::<module> target".into());
+        }
+        return tui::run(&ws, cfg.allow_dirty);
+    };
+
+    let (pkg_name, module_name) = cli::split_target(&target)?;
     let pkg = ws.find(pkg_name).ok_or_else(|| {
         format!(
             "no workspace member named `{pkg_name}` (members: {})",

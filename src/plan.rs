@@ -23,30 +23,43 @@ pub fn build(ws: &Workspace, pkg: &Package, closure: Closure) -> Plan {
 
 impl Plan {
     pub fn print(&self) {
+        for line in self.lines() {
+            println!("{line}");
+        }
+    }
+
+    /// The plan as display lines — shared by the CLI output and the TUI.
+    pub fn lines(&self) -> Vec<String> {
         let c = &self.closure;
-        println!(
+        let mut out = Vec::new();
+        out.push(format!(
             "extraction plan: {}::{} → new crate",
             self.source_crate, c.target
-        );
-        println!("  new crate:      {}", self.new_crate);
+        ));
+        out.push(format!("  new crate:   {}", self.new_crate));
 
-        print!("  modules ({}):   {}", c.modules.len(), c.target);
         let also = c.also_moved();
-        if !also.is_empty() {
+        let suffix = if also.is_empty() {
+            String::new()
+        } else {
             let names: Vec<&str> = also.iter().map(|s| s.as_str()).collect();
-            print!("  + {} (pulled in by coupling)", names.join(", "));
-        }
-        println!();
+            format!("  + {} (pulled in by coupling)", names.join(", "))
+        };
+        out.push(format!(
+            "  modules ({}): {}{suffix}",
+            c.modules.len(),
+            c.target
+        ));
 
-        println!("  files ({}):", c.files.len());
+        out.push(format!("  files ({}):", c.files.len()));
         for f in &c.files {
-            println!("    {}", self.rel(f));
+            out.push(format!("    {}", self.rel(f)));
         }
 
         if c.deps.is_empty() {
-            println!("  deps to move:   (none — std only)");
+            out.push("  deps to move: (none — std only)".to_string());
         } else {
-            println!("  deps to move:");
+            out.push("  deps to move:".to_string());
             for d in &c.deps {
                 let feats = if d.features.is_empty() {
                     String::new()
@@ -58,34 +71,35 @@ impl Plan {
                     .as_ref()
                     .map(|r| format!(" (as {r})"))
                     .unwrap_or_default();
-                println!("    {} = \"{}\"{rename}{feats}", d.name, d.req);
+                out.push(format!("    {} = \"{}\"{rename}{feats}", d.name, d.req));
             }
         }
 
-        println!(
-            "  parent refs:    {} site(s) into the moved modules (a re-export shim keeps them working)",
+        out.push(format!(
+            "  parent refs: {} site(s) into the moved modules",
             c.outbound_sites
-        );
+        ));
 
         if c.extractable() {
-            if c.also_moved().is_empty() {
-                println!("  coupling:       none — clean leaf, safe to lift ✓");
+            if also.is_empty() {
+                out.push("  coupling:    none — clean leaf ✓".to_string());
             } else {
-                println!(
-                    "  coupling:       self-contained — moves {} modules together ✓",
+                out.push(format!(
+                    "  coupling:    self-contained — moves {} modules together ✓",
                     c.modules.len()
-                );
+                ));
             }
-            println!();
-            println!("verdict: ready to lift — run again with --apply.");
+            out.push(String::new());
+            out.push("verdict: ready to lift ✓".to_string());
         } else {
-            println!("  coupling:       ⚠ cannot lift as-is:");
+            out.push("  coupling:    ⚠ cannot lift as-is:".to_string());
             for e in &c.escapes {
-                println!("    references crate-root item `{e}` (would need a dependency cycle)");
+                out.push(format!("    references crate-root item `{e}`"));
             }
-            println!();
-            println!("verdict: blocked — see above.");
+            out.push(String::new());
+            out.push("verdict: blocked".to_string());
         }
+        out
     }
 
     pub fn print_plain(&self) {
