@@ -1,0 +1,16 @@
+# Not published yet — v0, and it will get its own standalone repo + submodule
+# once it stands on its own (see .claude/plans/freight-suite.md §10.1).
+[package]
+name = "cargo-crane"
+version = "0.0.0"
+edition = "2021"
+description = "Lift a module out into its own crate — an extraction-refactor tool for Cargo workspaces."
+license = "MIT"
+publish = false
+
+[dependencies]
+# AST parsing + traversal for the module we're lifting.
+syn = { version = "2", features = ["full", "visit"] }
+# Parse `cargo metadata` for the workspace, package sources, and declared deps.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

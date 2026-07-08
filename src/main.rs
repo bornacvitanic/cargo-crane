@@ -1,0 +1,58 @@
+//! `cargo-crane` — lift a module out of a crate into a brand-new crate.
+//!
+//! v0 is the analysis half: point it at `<package>::<module>` and it works out
+//! the cut set (which files move), which dependencies the moved code needs,
+//! whether the module reaches back into its parent (coupling that would create
+//! a dependency cycle), and how many call sites a re-export shim must cover —
+//! then prints the plan. The apply phase (actually moving files and rewriting
+//! manifests/paths) plugs into `plan.rs` next.
+
+mod analyze;
+mod cli;
+mod module;
+mod plan;
+mod workspace;
+
+use cli::Cli;
+
+fn main() {
+    let cfg = match cli::parse(std::env::args()) {
+        Cli::Help => {
+            print!("{}", cli::usage());
+            return;
+        }
+        Cli::Error(e) => {
+            eprintln!("error: {e}\n\n{}", cli::usage());
+            std::process::exit(2);
+        }
+        Cli::Run(cfg) => cfg,
+    };
+
+    if let Err(e) = run(cfg) {
+        eprintln!("cargo-crane: {e}");
+        std::process::exit(1);
+    }
+}
+
+fn run(cfg: cli::Config) -> Result<(), String> {
+    let (pkg_name, module_name) = cli::split_target(&cfg.target)?;
+
+    let ws = workspace::load(&cfg)?;
+    let pkg = ws.find(pkg_name).ok_or_else(|| {
+        format!(
+            "no workspace member named `{pkg_name}` (members: {})",
+            ws.member_names()
+        )
+    })?;
+
+    let module = module::resolve(pkg, module_name)?;
+    let analysis = analyze::analyze(pkg, &module)?;
+    let plan = plan::build(&ws, pkg, &module, analysis);
+
+    if cfg.list {
+        plan.print_plain();
+    } else {
+        plan.print();
+    }
+    Ok(())
+}
