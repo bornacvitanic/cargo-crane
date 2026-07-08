@@ -12,7 +12,6 @@ use std::path::{Path, PathBuf};
 use crate::workspace::Package;
 
 pub struct ModuleSource {
-    pub name: String,
     /// Every `.rs` file that belongs to the module subtree.
     pub files: Vec<PathBuf>,
 }
@@ -55,10 +54,7 @@ pub fn resolve(pkg: &Package, module: &str) -> Result<ModuleSource, String> {
     files.sort();
     files.dedup();
 
-    Ok(ModuleSource {
-        name: module.to_string(),
-        files,
-    })
+    Ok(ModuleSource { files })
 }
 
 /// Recursively collect `.rs` files under a directory.

@@ -1,54 +1,53 @@
-//! Turn an [`Analysis`] into a human- (and script-) readable extraction plan.
-//! v0 stops at the plan; the apply phase (move files, write the new manifest,
-//! add the re-export shim, register the workspace member) plugs in here next.
+//! Render a [`Closure`] as a human- (and script-) readable extraction plan.
 
 use std::path::{Path, PathBuf};
 
-use crate::analyze::Analysis;
-use crate::module::ModuleSource;
+use crate::closure::Closure;
 use crate::workspace::{Package, Workspace};
 
 pub struct Plan {
     pub source_crate: String,
-    pub module: String,
-    /// New crate name suggestion: `<source>-<module>`.
     pub new_crate: String,
-    pub files: Vec<PathBuf>,
-    pub analysis: Analysis,
+    pub closure: Closure,
     root: PathBuf,
 }
 
-pub fn build(ws: &Workspace, pkg: &Package, module: &ModuleSource, analysis: Analysis) -> Plan {
+pub fn build(ws: &Workspace, pkg: &Package, closure: Closure) -> Plan {
     Plan {
         source_crate: pkg.name.clone(),
-        module: module.name.clone(),
-        new_crate: format!("{}-{}", pkg.name, module.name),
-        files: module.files.clone(),
-        analysis,
+        new_crate: format!("{}-{}", pkg.name, closure.target),
+        closure,
         root: ws.root.clone(),
     }
 }
 
 impl Plan {
-    /// The decorated, default output.
     pub fn print(&self) {
-        let clean = self.analysis.is_clean_leaf();
+        let c = &self.closure;
         println!(
             "extraction plan: {}::{} → new crate",
-            self.source_crate, self.module
+            self.source_crate, c.target
         );
         println!("  new crate:      {}", self.new_crate);
 
-        println!("  files ({}):", self.files.len());
-        for f in &self.files {
+        print!("  modules ({}):   {}", c.modules.len(), c.target);
+        let also = c.also_moved();
+        if !also.is_empty() {
+            let names: Vec<&str> = also.iter().map(|s| s.as_str()).collect();
+            print!("  + {} (pulled in by coupling)", names.join(", "));
+        }
+        println!();
+
+        println!("  files ({}):", c.files.len());
+        for f in &c.files {
             println!("    {}", self.rel(f));
         }
 
-        if self.analysis.deps_used.is_empty() {
+        if c.deps.is_empty() {
             println!("  deps to move:   (none — std only)");
         } else {
             println!("  deps to move:");
-            for d in &self.analysis.deps_used {
+            for d in &c.deps {
                 let feats = if d.features.is_empty() {
                     String::new()
                 } else {
@@ -64,53 +63,59 @@ impl Plan {
         }
 
         println!(
-            "  parent refs:    {} site(s) use crate::{} (a re-export shim keeps them working)",
-            self.analysis.outbound_sites, self.module
+            "  parent refs:    {} site(s) into the moved modules (a re-export shim keeps them working)",
+            c.outbound_sites
         );
 
-        if clean {
-            println!("  coupling:       none — clean leaf module, safe to lift ✓");
-        } else {
-            println!("  coupling:       ⚠ reaches back into the parent — lifting would need these to move too or would create a cycle:");
-            for r in &self.analysis.inbound {
-                println!("    uses {r}");
-            }
-            if self.analysis.super_refs > 0 {
+        if c.extractable() {
+            if c.also_moved().is_empty() {
+                println!("  coupling:       none — clean leaf, safe to lift ✓");
+            } else {
                 println!(
-                    "    {} `super::` reference(s) out of the module",
-                    self.analysis.super_refs
+                    "  coupling:       self-contained — moves {} modules together ✓",
+                    c.modules.len()
                 );
             }
-        }
-
-        println!();
-        if clean {
-            println!("verdict: ready to lift (apply phase not implemented in v0 — dry-run only).");
+            println!();
+            println!("verdict: ready to lift — run again with --apply.");
         } else {
-            println!("verdict: blocked — resolve the coupling above before lifting.");
+            println!("  coupling:       ⚠ cannot lift as-is:");
+            for e in &c.escapes {
+                println!("    references crate-root item `{e}` (would need a dependency cycle)");
+            }
+            for m in &c.multi_file {
+                println!("    module `{m}` is multi-file (v0 handles single-file modules only)");
+            }
+            println!();
+            println!("verdict: blocked — see above.");
         }
     }
 
-    /// Plain, greppable output for `--list`.
     pub fn print_plain(&self) {
+        let c = &self.closure;
         println!("crate\t{}", self.source_crate);
-        println!("module\t{}", self.module);
+        println!("target\t{}", c.target);
         println!("new_crate\t{}", self.new_crate);
-        for f in &self.files {
+        for m in &c.modules {
+            println!("module\t{m}");
+        }
+        for f in &c.files {
             println!("file\t{}", self.rel(f));
         }
-        for d in &self.analysis.deps_used {
+        for d in &c.deps {
             println!("dep\t{}\t{}", d.name, d.req);
         }
-        println!("outbound_sites\t{}", self.analysis.outbound_sites);
-        for r in &self.analysis.inbound {
-            println!("inbound\t{r}");
+        println!("outbound_sites\t{}", c.outbound_sites);
+        for e in &c.escapes {
+            println!("escape\t{e}");
         }
-        println!("super_refs\t{}", self.analysis.super_refs);
+        for m in &c.multi_file {
+            println!("multi_file\t{m}");
+        }
         println!(
             "verdict\t{}",
-            if self.analysis.is_clean_leaf() {
-                "clean-leaf"
+            if c.extractable() {
+                "extractable"
             } else {
                 "blocked"
             }

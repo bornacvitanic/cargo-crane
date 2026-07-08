@@ -1,33 +1,34 @@
-//! The apply phase: turn a clean-leaf [`Plan`] into real edits. It creates the
-//! new crate (its `lib.rs` from the module, a `Cargo.toml` with the moved
-//! deps), removes the module file from the parent, swaps the `mod` declaration
-//! for a `pub use <new-crate> as <module>;` re-export shim (so the parent's
-//! `crate::<module>::…` paths keep resolving), adds the path dependency, and
-//! registers the new workspace member.
+//! The apply phase: turn an extractable [`Closure`] into real edits, using
+//! preserve-as-modules mode — the moved modules keep their names inside the new
+//! crate, so their `crate::<mod>` / `super::<mod>` paths need no rewriting.
 //!
-//! v0 handles the tractable case only: a single-file, clean-leaf module (no
-//! inbound coupling). The string transforms are pure functions so they can be
-//! unit-tested without touching the filesystem.
+//! It creates the new crate (a `lib.rs` of `pub mod` declarations, a manifest
+//! with the union of moved deps), moves each module file across, and in the
+//! parent replaces each moved `mod <m>;` with either a `use <new-crate>::<m>;`
+//! re-export (if the parent still references it) or nothing (if it doesn't),
+//! then adds the path dependency and registers the new workspace member.
+//!
+//! v0 requires single-file modules and a self-contained closure (no escapes to
+//! crate-root items). The string transforms are pure and unit-tested.
 
+use std::collections::BTreeSet;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
+use crate::analyze;
 use crate::plan::Plan;
 use crate::workspace::{Package, Workspace};
 
 pub fn apply(ws: &Workspace, pkg: &Package, plan: &Plan) -> Result<Vec<String>, String> {
-    if !plan.analysis.is_clean_leaf() {
+    let c = &plan.closure;
+    if !c.extractable() {
         return Err(
-            "v0 --apply only handles clean-leaf modules; this one reaches back into its parent \
-             (see the coupling in the plan)"
+            "this module can't be lifted as-is (see the plan's coupling section) — v0 needs a \
+             self-contained closure of single-file modules"
                 .into(),
         );
     }
-    if plan.files.len() != 1 {
-        return Err("v0 --apply only handles single-file modules".into());
-    }
 
-    let module_file = &plan.files[0];
     let new_dir = ws.root.join(&plan.new_crate);
     if new_dir.exists() {
         return Err(format!(
@@ -35,37 +36,56 @@ pub fn apply(ws: &Workspace, pkg: &Package, plan: &Plan) -> Result<Vec<String>, 
             new_dir.display()
         ));
     }
-    let extern_ident = plan.new_crate.replace('-', "_");
+    let ident = plan.new_crate.replace('-', "_");
+    let moved_set: BTreeSet<PathBuf> = c.files.iter().cloned().collect();
     let mut log = Vec::new();
 
-    // 1) Create the new crate from the module's source.
+    // 1) New crate skeleton: a lib.rs of `pub mod` lines.
     fs::create_dir_all(new_dir.join("src")).map_err(io("create new crate dir"))?;
-    let module_src = fs::read_to_string(module_file).map_err(io("read module source"))?;
-    let lib = rewrite_lib_body(&module_src, &plan.module);
+    let lib: String = c
+        .modules
+        .iter()
+        .map(|m| format!("pub mod {m};\n"))
+        .collect();
     fs::write(new_dir.join("src").join("lib.rs"), lib).map_err(io("write lib.rs"))?;
     let manifest = new_manifest(
         &plan.new_crate,
         &pkg.edition,
         pkg.license.as_deref(),
-        &plan.analysis.deps_used,
+        &c.deps,
     );
     fs::write(new_dir.join("Cargo.toml"), manifest).map_err(io("write new Cargo.toml"))?;
-    log.push(format!("created crate {}/", plan.new_crate));
-
-    // 2) Remove the module file from the parent.
-    fs::remove_file(module_file).map_err(io("remove module file"))?;
-    log.push(format!("moved {} out of the parent", rel(ws, module_file)));
-
-    // 3) Replace `mod <module>;` with a re-export shim in the parent crate root.
-    let root_src = fs::read_to_string(&pkg.crate_root).map_err(io("read crate root"))?;
-    let shimmed = shim_root(&root_src, &plan.module, &extern_ident)?;
-    fs::write(&pkg.crate_root, shimmed).map_err(io("write crate root"))?;
     log.push(format!(
-        "shimmed `mod {}` → `use {extern_ident} as {}` in {}",
-        plan.module,
-        plan.module,
-        rel(ws, &pkg.crate_root)
+        "created crate {}/ ({})",
+        plan.new_crate,
+        c.modules.join(", ")
     ));
+
+    // 2) Move each module file across (single-file modules only).
+    for m in &c.modules {
+        let src_file = c
+            .files
+            .iter()
+            .find(|f| f.file_stem().and_then(|s| s.to_str()) == Some(m.as_str()))
+            .ok_or_else(|| format!("could not locate the source file for module `{m}`"))?;
+        let body = fs::read_to_string(src_file).map_err(io("read module source"))?;
+        fs::write(new_dir.join("src").join(format!("{m}.rs")), body).map_err(io("write module"))?;
+        fs::remove_file(src_file).map_err(io("remove module file"))?;
+        log.push(format!("moved {} into the new crate", rel(ws, src_file)));
+    }
+
+    // 3) Parent crate root: shim the modules the parent still uses; drop the rest.
+    let mut root_src = fs::read_to_string(&pkg.crate_root).map_err(io("read crate root"))?;
+    for m in &c.modules {
+        let referenced = analyze::parent_references(pkg, &moved_set, m);
+        root_src = edit_root(&root_src, m, &ident, referenced)?;
+        log.push(if referenced {
+            format!("shimmed `mod {m}` → `use {ident}::{m}` in the crate root")
+        } else {
+            format!("removed `mod {m}` from the crate root (unused after the move)")
+        });
+    }
+    fs::write(&pkg.crate_root, root_src).map_err(io("write crate root"))?;
 
     // 4) Add the path dependency to the parent manifest.
     let parent_manifest = pkg.manifest_path();
@@ -94,38 +114,30 @@ pub fn apply(ws: &Workspace, pkg: &Package, plan: &Plan) -> Result<Vec<String>, 
 
 // --- pure transforms (unit-tested) --------------------------------------
 
-/// Rewrite the module body for life as a crate root: `crate::<module>::` was a
-/// self-reference into this module, and is now just `crate::`.
-fn rewrite_lib_body(src: &str, module: &str) -> String {
-    src.replace(&format!("crate::{module}::"), "crate::")
-}
-
-/// Replace the parent's `mod <module>;` (or `pub mod <module>;`) with a
-/// re-export of the new crate under the same name, so existing
-/// `crate::<module>::…` paths keep working untouched.
-fn shim_root(root_src: &str, module: &str, extern_ident: &str) -> Result<String, String> {
-    let candidates = [
-        (
-            format!("pub mod {module};"),
-            format!("pub use {extern_ident} as {module};"),
-        ),
-        (
-            format!("mod {module};"),
-            format!("use {extern_ident} as {module};"),
-        ),
-    ];
-    for (decl, shim) in candidates {
-        if let Some(pos) = root_src.find(&decl) {
-            let mut out = String::with_capacity(root_src.len());
-            out.push_str(&root_src[..pos]);
-            out.push_str(&shim);
-            out.push_str(&root_src[pos + decl.len()..]);
-            return Ok(out);
+/// Replace a parent `mod <module>;` (or `pub mod`) with a re-export of the new
+/// crate's module (preserving `pub`), or remove the line entirely when the
+/// parent no longer references it.
+fn edit_root(src: &str, module: &str, ident: &str, referenced: bool) -> Result<String, String> {
+    for (is_pub, decl) in [
+        (true, format!("pub mod {module};")),
+        (false, format!("mod {module};")),
+    ] {
+        if let Some(pos) = src.find(&decl) {
+            let end = pos + decl.len();
+            if referenced {
+                let kw = if is_pub { "pub use" } else { "use" };
+                let shim = format!("{kw} {ident}::{module};");
+                return Ok(format!("{}{}{}", &src[..pos], shim, &src[end..]));
+            }
+            // Drop the declaration and one trailing newline.
+            let mut e = end;
+            if src[e..].starts_with('\n') {
+                e += 1;
+            }
+            return Ok(format!("{}{}", &src[..pos], &src[e..]));
         }
     }
-    Err(format!(
-        "could not find `mod {module};` in the crate root to replace with a shim"
-    ))
+    Err(format!("could not find `mod {module};` in the crate root"))
 }
 
 /// Build a fresh Cargo.toml for the extracted crate.
@@ -133,7 +145,7 @@ fn new_manifest(
     name: &str,
     edition: &str,
     license: Option<&str>,
-    deps: &[crate::analyze::ResolvedDep],
+    deps: &[analyze::ResolvedDep],
 ) -> String {
     let mut s = String::new();
     s.push_str("[package]\n");
@@ -164,8 +176,8 @@ fn new_manifest(
     s
 }
 
-/// Insert `<dep_name> = { path = "<rel_path>" }` into a manifest's
-/// `[dependencies]`, preserving the rest of the file's formatting.
+/// Insert `<dep_name> = { path = "<rel_path>" }` into `[dependencies]`,
+/// preserving the rest of the file's formatting.
 fn add_dep_path(manifest_src: &str, dep_name: &str, rel_path: &str) -> Result<String, String> {
     let mut doc: toml_edit::DocumentMut = manifest_src
         .parse()
@@ -225,33 +237,28 @@ mod tests {
     use crate::analyze::ResolvedDep;
 
     #[test]
-    fn shim_replaces_plain_mod() {
-        let out = shim_root(
-            "mod cli;\nmod theme;\nmod ui;\n",
-            "theme",
-            "cargo_bay_theme",
-        )
-        .unwrap();
-        assert!(out.contains("use cargo_bay_theme as theme;"));
+    fn edit_root_shims_referenced_module() {
+        let out = edit_root("mod cli;\nmod theme;\n", "theme", "cargo_bay_theme", true).unwrap();
+        assert!(out.contains("use cargo_bay_theme::theme;"));
+        assert!(out.contains("mod cli;"));
         assert!(!out.contains("mod theme;"));
-        assert!(out.contains("mod cli;") && out.contains("mod ui;"));
     }
 
     #[test]
-    fn shim_preserves_pub() {
-        let out = shim_root("pub mod theme;\n", "theme", "x").unwrap();
-        assert_eq!(out, "pub use x as theme;\n");
+    fn edit_root_preserves_pub() {
+        let out = edit_root("pub mod theme;\n", "theme", "x", true).unwrap();
+        assert_eq!(out, "pub use x::theme;\n");
     }
 
     #[test]
-    fn shim_errors_when_absent() {
-        assert!(shim_root("fn main() {}", "theme", "x").is_err());
+    fn edit_root_removes_unreferenced_module() {
+        let out = edit_root("mod a;\nmod helper;\nmod b;\n", "helper", "x", false).unwrap();
+        assert_eq!(out, "mod a;\nmod b;\n");
     }
 
     #[test]
-    fn lib_body_drops_self_module_prefix() {
-        let out = rewrite_lib_body("let x = crate::theme::ACCENT;", "theme");
-        assert_eq!(out, "let x = crate::ACCENT;");
+    fn edit_root_errors_when_absent() {
+        assert!(edit_root("fn main() {}", "theme", "x", true).is_err());
     }
 
     #[test]
@@ -287,18 +294,18 @@ mod tests {
         )
         .unwrap();
         assert!(dep.contains("demo-thing = { path = \"../demo-thing\" }"));
-        assert!(dep.contains("serde = \"1\"")); // untouched
+        assert!(dep.contains("serde = \"1\""));
 
         let mem = add_member("[workspace]\nmembers = [\"app\"]\n", "demo-thing").unwrap();
         assert!(mem.contains("\"demo-thing\""));
-        // idempotent
         assert_eq!(add_member(&mem, "demo-thing").unwrap(), mem);
     }
 
     #[test]
     fn relative_dep_path_for_siblings() {
-        let from = Path::new("/ws/cargo-bay");
-        let to = Path::new("/ws/cargo-bay-theme");
-        assert_eq!(relative_dep_path(from, to), "../cargo-bay-theme");
+        assert_eq!(
+            relative_dep_path(Path::new("/ws/cargo-bay"), Path::new("/ws/cargo-bay-theme")),
+            "../cargo-bay-theme"
+        );
     }
 }

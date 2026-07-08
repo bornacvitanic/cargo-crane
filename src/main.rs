@@ -10,6 +10,7 @@
 mod analyze;
 mod apply;
 mod cli;
+mod closure;
 mod module;
 mod plan;
 mod workspace;
@@ -46,15 +47,17 @@ fn run(cfg: cli::Config) -> Result<(), String> {
         )
     })?;
 
-    let module = module::resolve(pkg, module_name)?;
-    let analysis = analyze::analyze(pkg, &module)?;
-    let plan = plan::build(&ws, pkg, &module, analysis);
+    // Resolve the module up front for a clean "not found" error before the
+    // (more involved) closure walk.
+    module::resolve(pkg, module_name)?;
+    let closure = closure::compute(pkg, module_name)?;
+    let plan = plan::build(&ws, pkg, closure);
 
     if cfg.apply {
         let log = apply::apply(&ws, pkg, &plan)?;
         println!(
             "extracted {}::{} → {}",
-            plan.source_crate, plan.module, plan.new_crate
+            plan.source_crate, plan.closure.target, plan.new_crate
         );
         for line in &log {
             println!("  ✓ {line}");
