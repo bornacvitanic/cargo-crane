@@ -28,7 +28,6 @@ pub struct ResolvedDep {
 /// What one module's source reveals.
 pub struct ModuleFacts {
     pub files: Vec<PathBuf>,
-    pub single_file: bool,
     /// External-crate identifiers referenced.
     pub candidates: BTreeSet<String>,
     /// Sibling top-level modules referenced (must move together).
@@ -74,16 +73,21 @@ pub fn analyze_module(
     tops: &BTreeSet<String>,
 ) -> Result<ModuleFacts, String> {
     let src = module::resolve(pkg, name)?;
-    let single_file = src.files.len() == 1;
+    let top_files = [
+        pkg.src_dir.join(format!("{name}.rs")),
+        pkg.src_dir.join(name).join("mod.rs"),
+    ];
     let mut refs = Refs::new(name.to_string(), tops.clone());
     for path in &src.files {
         let text = fs::read_to_string(path).map_err(|e| format!("read {}: {e}", path.display()))?;
         let ast = syn::parse_file(&text).map_err(|e| format!("parse {}: {e}", path.display()))?;
+        // `super::` means the crate root only from the module's top file; inside
+        // a deeper submodule file it points within the module (internal).
+        refs.super_is_crate = top_files.iter().any(|t| t == path);
         refs.visit_file(&ast);
     }
     Ok(ModuleFacts {
         files: src.files,
-        single_file,
         candidates: refs.candidates,
         module_refs: refs.module_refs,
         escapes: refs.escapes,
@@ -190,6 +194,9 @@ fn text_references(text: &str, needle: &str) -> bool {
 struct Refs {
     self_module: String,
     tops: BTreeSet<String>,
+    /// Whether `super::` in the file currently being visited means the crate
+    /// root (true for the module's top file, false inside a submodule file).
+    super_is_crate: bool,
     candidates: BTreeSet<String>,
     module_refs: BTreeSet<String>,
     escapes: BTreeSet<String>,
@@ -200,6 +207,7 @@ impl Refs {
         Self {
             self_module,
             tops,
+            super_is_crate: true,
             candidates: BTreeSet::new(),
             module_refs: BTreeSet::new(),
             escapes: BTreeSet::new(),
@@ -211,24 +219,33 @@ impl Refs {
             return;
         };
         match first.as_str() {
-            // For a top-level module, `super::` and `crate::` both name a
-            // sibling of the module at the crate root.
-            "crate" | "super" => match idents.get(1) {
-                Some(a) if a == &self.self_module => {}
-                Some(a) if self.tops.contains(a) => {
-                    self.module_refs.insert(a.clone());
-                }
-                Some(a) => {
-                    self.escapes.insert(format!("{first}::{a}"));
-                }
-                None => {
-                    self.escapes.insert(first.clone());
-                }
-            },
+            "crate" => self.sibling(idents),
+            // `super::` names a crate-root sibling only from the module's top
+            // file; from a submodule it stays inside the module (internal).
+            "super" if self.super_is_crate => self.sibling(idents),
+            "super" => {}
             "self" | "std" | "core" | "alloc" | "Self" => {}
             other => {
                 self.candidates.insert(other.to_string());
             }
+        }
+    }
+
+    /// Classify a `crate::`/`super::` reference to a crate-root sibling: itself
+    /// (ignore), another top-level module (move together), or a crate-root item
+    /// (an escape that blocks the lift).
+    fn sibling(&mut self, idents: &[String]) {
+        match idents.get(1) {
+            Some(a) if a == &self.self_module => {}
+            Some(a) if self.tops.contains(a) => {
+                self.module_refs.insert(a.clone());
+            }
+            Some(a) => {
+                self.escapes.insert(format!("{}::{}", idents[0], a));
+            }
+            // A bare `crate` / `super` names no item — e.g. the `crate` in a
+            // `pub(crate)` visibility. Not a reference to track.
+            None => {}
         }
     }
 }
@@ -346,6 +363,25 @@ mod tests {
             &["cli", "discover"],
         );
         assert!(r.module_refs.contains("cli"));
+    }
+
+    #[test]
+    fn super_from_a_submodule_file_is_internal() {
+        // Same source, but visited as a submodule file — `super` isn't the root.
+        let file = syn::parse_file("fn f() { super::cli::go(); }").expect("parses");
+        let tops: BTreeSet<String> = ["cli".to_string()].into_iter().collect();
+        let mut r = Refs::new("widget".to_string(), tops);
+        r.super_is_crate = false;
+        r.visit_file(&file);
+        assert!(r.module_refs.is_empty());
+        assert!(r.escapes.is_empty());
+    }
+
+    #[test]
+    fn pub_crate_visibility_is_not_an_escape() {
+        // `pub(crate)` visits a bare `crate` path — must not read as coupling.
+        let r = refs_of("pub(crate) fn f() {}", "widget", &["widget"]);
+        assert!(r.escapes.is_empty());
     }
 
     #[test]

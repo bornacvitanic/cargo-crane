@@ -83,9 +83,6 @@ impl Plan {
             for e in &c.escapes {
                 println!("    references crate-root item `{e}` (would need a dependency cycle)");
             }
-            for m in &c.multi_file {
-                println!("    module `{m}` is multi-file (v0 handles single-file modules only)");
-            }
             println!();
             println!("verdict: blocked — see above.");
         }
@@ -108,9 +105,6 @@ impl Plan {
         println!("outbound_sites\t{}", c.outbound_sites);
         for e in &c.escapes {
             println!("escape\t{e}");
-        }
-        for m in &c.multi_file {
-            println!("multi_file\t{m}");
         }
         println!(
             "verdict\t{}",

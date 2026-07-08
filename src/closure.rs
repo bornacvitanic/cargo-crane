@@ -22,15 +22,13 @@ pub struct Closure {
     pub deps: Vec<ResolvedDep>,
     /// References to crate-root items — genuine blockers.
     pub escapes: BTreeSet<String>,
-    /// Modules in the set that aren't single-file (v0 can't move these yet).
-    pub multi_file: Vec<String>,
     /// How many places in the rest of the crate reference the moved modules.
     pub outbound_sites: usize,
 }
 
 impl Closure {
     pub fn extractable(&self) -> bool {
-        self.escapes.is_empty() && self.multi_file.is_empty()
+        self.escapes.is_empty()
     }
 
     /// Modules dragged in by coupling (everything but the target).
@@ -50,13 +48,9 @@ pub fn compute(pkg: &Package, target: &str) -> Result<Closure, String> {
     let mut files = Vec::new();
     let mut candidates = BTreeSet::new();
     let mut escapes = BTreeSet::new();
-    let mut multi_file = Vec::new();
 
     while let Some(m) = queue.pop_front() {
         let facts = analyze::analyze_module(pkg, &m, &tops)?;
-        if !facts.single_file {
-            multi_file.push(m.clone());
-        }
         files.extend(facts.files);
         candidates.extend(facts.candidates);
         escapes.extend(facts.escapes);
@@ -69,7 +63,6 @@ pub fn compute(pkg: &Package, target: &str) -> Result<Closure, String> {
 
     let mut modules: Vec<String> = seen.iter().cloned().collect();
     modules.sort();
-    multi_file.sort();
 
     let moved_set: BTreeSet<PathBuf> = files.iter().cloned().collect();
     let outbound_sites = analyze::count_outbound(pkg, &moved_set, &seen);
@@ -81,7 +74,6 @@ pub fn compute(pkg: &Package, target: &str) -> Result<Closure, String> {
         files,
         deps,
         escapes,
-        multi_file,
         outbound_sites,
     })
 }

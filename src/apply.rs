@@ -8,8 +8,10 @@
 //! re-export (if the parent still references it) or nothing (if it doesn't),
 //! then adds the path dependency and registers the new workspace member.
 //!
-//! v0 requires single-file modules and a self-contained closure (no escapes to
-//! crate-root items). The string transforms are pure and unit-tested.
+//! v0 requires a self-contained closure (no escapes to crate-root items); it
+//! handles single- and multi-file (directory) modules and promotes
+//! `pub(crate)` → `pub` so parent references reach items across the new crate
+//! boundary. The string transforms are pure and unit-tested.
 
 use std::collections::BTreeSet;
 use std::fs;
@@ -23,8 +25,8 @@ pub fn apply(ws: &Workspace, pkg: &Package, plan: &Plan) -> Result<Vec<String>, 
     let c = &plan.closure;
     if !c.extractable() {
         return Err(
-            "this module can't be lifted as-is (see the plan's coupling section) — v0 needs a \
-             self-contained closure of single-file modules"
+            "this module can't be lifted as-is: it references crate-root items (see the plan's \
+             coupling section), which would require a dependency cycle"
                 .into(),
         );
     }
@@ -61,18 +63,31 @@ pub fn apply(ws: &Workspace, pkg: &Package, plan: &Plan) -> Result<Vec<String>, 
         c.modules.join(", ")
     ));
 
-    // 2) Move each module file across (single-file modules only).
-    for m in &c.modules {
-        let src_file = c
-            .files
-            .iter()
-            .find(|f| f.file_stem().and_then(|s| s.to_str()) == Some(m.as_str()))
-            .ok_or_else(|| format!("could not locate the source file for module `{m}`"))?;
-        let body = fs::read_to_string(src_file).map_err(io("read module source"))?;
-        fs::write(new_dir.join("src").join(format!("{m}.rs")), body).map_err(io("write module"))?;
-        fs::remove_file(src_file).map_err(io("remove module file"))?;
-        log.push(format!("moved {} into the new crate", rel(ws, src_file)));
+    // 2) Move every module file across, preserving its path under src/ (so
+    //    directory modules keep their layout) and promoting pub(crate) → pub.
+    for f in &c.files {
+        let relp = f
+            .strip_prefix(&pkg.src_dir)
+            .map_err(|_| format!("{} is not under {}", f.display(), pkg.src_dir.display()))?;
+        let dest = new_dir.join("src").join(relp);
+        if let Some(parent) = dest.parent() {
+            fs::create_dir_all(parent).map_err(io("create module dir"))?;
+        }
+        let body = fs::read_to_string(f).map_err(io("read module source"))?;
+        fs::write(&dest, promote_visibility(&body)).map_err(io("write module"))?;
+        fs::remove_file(f).map_err(io("remove module file"))?;
     }
+    // Clean up now-empty directory-module folders left behind.
+    for m in &c.modules {
+        let dir = pkg.src_dir.join(m);
+        if dir.is_dir() {
+            prune_empty_dirs(&dir);
+        }
+    }
+    log.push(format!(
+        "moved {} file(s) into the new crate",
+        c.files.len()
+    ));
 
     // 3) Parent crate root: shim the modules the parent still uses; drop the rest.
     let mut root_src = fs::read_to_string(&pkg.crate_root).map_err(io("read crate root"))?;
@@ -138,6 +153,31 @@ fn edit_root(src: &str, module: &str, ident: &str, referenced: bool) -> Result<S
         }
     }
     Err(format!("could not find `mod {module};` in the crate root"))
+}
+
+/// Promote `pub(crate)` items to `pub`: inside the parent they were visible
+/// crate-wide, but the parent now reaches them across a crate boundary where
+/// `pub(crate)` is private. Over-promoting is harmless.
+fn promote_visibility(src: &str) -> String {
+    src.replace("pub(crate)", "pub")
+}
+
+/// Recursively remove empty directories under (and including) `dir`.
+fn prune_empty_dirs(dir: &Path) {
+    if let Ok(entries) = fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                prune_empty_dirs(&path);
+            }
+        }
+    }
+    let empty = fs::read_dir(dir)
+        .map(|mut it| it.next().is_none())
+        .unwrap_or(false);
+    if empty {
+        let _ = fs::remove_dir(dir);
+    }
 }
 
 /// Build a fresh Cargo.toml for the extracted crate.
@@ -259,6 +299,12 @@ mod tests {
     #[test]
     fn edit_root_errors_when_absent() {
         assert!(edit_root("fn main() {}", "theme", "x", true).is_err());
+    }
+
+    #[test]
+    fn promotes_pub_crate_to_pub() {
+        let out = promote_visibility("pub(crate) fn f() {}\npub(crate) mod m;\npub struct S;");
+        assert_eq!(out, "pub fn f() {}\npub mod m;\npub struct S;");
     }
 
     #[test]
