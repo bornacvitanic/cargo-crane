@@ -16,12 +16,18 @@
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use crate::analyze;
 use crate::plan::Plan;
 use crate::workspace::{Package, Workspace};
 
-pub fn apply(ws: &Workspace, pkg: &Package, plan: &Plan) -> Result<Vec<String>, String> {
+pub fn apply(
+    ws: &Workspace,
+    pkg: &Package,
+    plan: &Plan,
+    allow_dirty: bool,
+) -> Result<Vec<String>, String> {
     let c = &plan.closure;
     if !c.extractable() {
         return Err(
@@ -29,6 +35,16 @@ pub fn apply(ws: &Workspace, pkg: &Package, plan: &Plan) -> Result<Vec<String>, 
              coupling section), which would require a dependency cycle"
                 .into(),
         );
+    }
+
+    // Refuse to write into a tree that isn't a clean git repo, so the change is
+    // always a `git restore` away from undone. Check both the workspace repo and
+    // the member's own repo (they differ when the member is a submodule).
+    if !allow_dirty {
+        ensure_clean(&ws.root)?;
+        if pkg.manifest_dir != ws.root {
+            ensure_clean(&pkg.manifest_dir)?;
+        }
     }
 
     let new_dir = ws.root.join(&plan.new_crate);
@@ -125,6 +141,35 @@ pub fn apply(ws: &Workspace, pkg: &Package, plan: &Plan) -> Result<Vec<String>, 
     ));
 
     Ok(log)
+}
+
+/// Require `dir` to be inside a git repository with no uncommitted changes.
+fn ensure_clean(dir: &Path) -> Result<(), String> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["status", "--porcelain"])
+        .output()
+        .map_err(|_| {
+            "git was not found, so a clean tree can't be verified — re-run with --allow-dirty to \
+             proceed anyway"
+                .to_string()
+        })?;
+    if !output.status.success() {
+        return Err(format!(
+            "{} is not inside a git repository, so the extraction can't be easily undone — \
+             re-run with --allow-dirty to proceed anyway",
+            dir.display()
+        ));
+    }
+    if !output.stdout.is_empty() {
+        return Err(format!(
+            "{} has uncommitted changes — commit or stash them first so the extraction is easy to \
+             undo, or re-run with --allow-dirty",
+            dir.display()
+        ));
+    }
+    Ok(())
 }
 
 // --- pure transforms (unit-tested) --------------------------------------

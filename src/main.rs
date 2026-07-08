@@ -54,7 +54,7 @@ fn run(cfg: cli::Config) -> Result<(), String> {
     let plan = plan::build(&ws, pkg, closure);
 
     if cfg.apply {
-        let log = apply::apply(&ws, pkg, &plan)?;
+        let log = apply::apply(&ws, pkg, &plan, cfg.allow_dirty)?;
         println!(
             "extracted {}::{} → {}",
             plan.source_crate, plan.closure.target, plan.new_crate
@@ -63,6 +63,10 @@ fn run(cfg: cli::Config) -> Result<(), String> {
             println!("  ✓ {line}");
         }
         println!("\nnext: run `cargo check` to verify the workspace still builds.");
+        println!(
+            "undo:  `git restore .` (and delete {}/) to revert.",
+            plan.new_crate
+        );
     } else if cfg.list {
         plan.print_plain();
     } else {

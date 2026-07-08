@@ -11,9 +11,10 @@ pub struct Config {
     pub manifest_path: Option<PathBuf>,
     /// Print the plan as plain text (no decoration) — the scriptable mode.
     pub list: bool,
-    /// Actually perform the extraction (v0: clean-leaf, single-file only)
-    /// instead of just printing the plan.
+    /// Actually perform the extraction instead of just printing the plan.
     pub apply: bool,
+    /// Skip the clean-git-tree safety check before `--apply`.
+    pub allow_dirty: bool,
 }
 
 pub enum Cli {
@@ -32,13 +33,15 @@ EXAMPLE:
     cargo crane cargo-bay::discover     # analyse lifting cargo-bay's `discover` module
 
 OPTIONS:
-    --apply               Perform the extraction (v0: clean-leaf, single-file only)
+    --apply               Perform the extraction (writes files)
+    --allow-dirty         Skip the clean-git-tree check that --apply requires
     --manifest-path <P>   Use the workspace that contains this Cargo.toml
     --list                Print the extraction plan as plain text
     -h, --help            Show this help
 
 Without --apply, cargo-crane only analyses the extraction and prints a plan
-(dry-run). --apply writes files, so run it on a clean git tree.
+(dry-run). --apply writes files, and refuses unless the tree is a clean git
+repository (so the change is easy to undo) — override with --allow-dirty.
 ";
 
 pub fn usage() -> &'static str {
@@ -58,6 +61,7 @@ pub fn parse<I: Iterator<Item = String>>(mut args: I) -> Cli {
     let mut manifest_path = None;
     let mut list = false;
     let mut apply = false;
+    let mut allow_dirty = false;
 
     let mut cur = next;
     while let Some(arg) = cur {
@@ -65,6 +69,7 @@ pub fn parse<I: Iterator<Item = String>>(mut args: I) -> Cli {
             "-h" | "--help" => return Cli::Help,
             "--list" => list = true,
             "--apply" => apply = true,
+            "--allow-dirty" => allow_dirty = true,
             "--manifest-path" => match args.next() {
                 Some(v) => manifest_path = Some(v.into()),
                 None => return Cli::Error("--manifest-path needs a value".into()),
@@ -88,6 +93,7 @@ pub fn parse<I: Iterator<Item = String>>(mut args: I) -> Cli {
             manifest_path,
             list,
             apply,
+            allow_dirty,
         }),
         None => Cli::Error("missing <package>::<module> to extract".into()),
     }
