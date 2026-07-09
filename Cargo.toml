@@ -1,12 +1,18 @@
-# Not published yet — v0, and it will get its own standalone repo + submodule
-# once it stands on its own (see .claude/plans/freight-suite.md §10.1).
 [package]
 name = "cargo-crane"
-version = "0.0.0"
-edition = "2021"
+version = "0.1.0"
+authors = ["Borna Cvitanić <borna.cvitanic@gmail.com>"]
 description = "Lift a module out into its own crate — an extraction-refactor tool for Cargo workspaces."
+repository = "https://github.com/bornacvitanic/cargo-crane"
 license = "MIT"
-publish = false
+edition = "2021"
+readme = "README.md"
+keywords = ["cargo", "refactor", "workspace", "extract", "tui"]
+categories = [
+    "command-line-utilities",
+    "development-tools",
+    "development-tools::cargo-plugins",
+]
 
 [dependencies]
 # AST parsing + traversal for the module we're lifting.
