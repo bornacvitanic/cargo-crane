@@ -16,12 +16,11 @@ checksum = "b4388bee8683e3d04af747c73422af53102d2bd24d9eadb6cbc100baef4b43f8"
 
 [[package]]
 name = "cargo-crane"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "crossterm",
+ "portside",
  "ratatui",
- "serde",
- "serde_json",
  "syn",
  "toml_edit",
 ]
@@ -306,6 +305,16 @@ name = "paste"
 version = "1.0.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
+
+[[package]]
+name = "portside"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "044623a80477e32cd68993c4efbbfc83502f5f4928aeed826b0150b72f35f133"
+dependencies = [
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "proc-macro2"

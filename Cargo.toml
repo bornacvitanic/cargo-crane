@@ -1,6 +1,6 @@
 [package]
 name = "cargo-crane"
-version = "0.1.0"
+version = "0.2.0"
 authors = ["Borna Cvitanić <borna.cvitanic@gmail.com>"]
 description = "Lift a module out into its own crate — an extraction-refactor tool for Cargo workspaces."
 repository = "https://github.com/bornacvitanic/cargo-crane"
@@ -15,11 +15,10 @@ categories = [
 ]
 
 [dependencies]
+# Shared workspace discovery (cargo metadata) for the freight suite.
+portside = "0.1"
 # AST parsing + traversal for the module we're lifting.
 syn = { version = "2", features = ["full", "visit"] }
-# Parse `cargo metadata` for the workspace, package sources, and declared deps.
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
 # Edit existing Cargo.toml files (add dep, register member) preserving format.
 toml_edit = "0.22"
 # Interactive TUI (same stack as the rest of the suite).

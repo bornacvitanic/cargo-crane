@@ -1,12 +1,8 @@
-//! Workspace + package discovery via `cargo metadata`. (This is the code most
-//! likely to migrate into the shared `portside` core once a second tool needs
-//! it — see the freight plan.) We pull the target package's crate root, source
-//! dir, and declared dependencies, which the analysis then works against.
+//! Workspace + package discovery, backed by the shared [`portside`] core. We
+//! map its model into the shape the rest of cargo-crane works against: members
+//! that have a crate root, with their source dir and declared dependencies.
 
-use std::path::{Path, PathBuf};
-use std::process::Command;
-
-use serde::Deserialize;
+use std::path::PathBuf;
 
 use crate::cli::Config;
 
@@ -70,107 +66,43 @@ impl Workspace {
     }
 }
 
-/// Run cargo once and build the workspace view.
+/// Discover the workspace via `portside` and adapt it to cargo-crane's view.
 pub fn load(cfg: &Config) -> Result<Workspace, String> {
-    let mut cmd = Command::new("cargo");
-    cmd.args(["metadata", "--format-version", "1", "--no-deps"]);
-    if let Some(mp) = &cfg.manifest_path {
-        cmd.arg("--manifest-path").arg(mp);
-    }
-    let output = cmd.output().map_err(|e| {
-        if e.kind() == std::io::ErrorKind::NotFound {
-            "cargo-crane needs Cargo, but `cargo` was not found on PATH.".to_string()
-        } else {
-            format!("failed to run cargo metadata: {e}")
-        }
-    })?;
-    if !output.status.success() {
-        let msg = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        return Err(format!(
-            "cargo-crane must run inside a Cargo workspace.\n  cargo metadata: {msg}"
-        ));
-    }
+    let ws = portside::load(&portside::LoadOptions {
+        manifest_path: cfg.manifest_path.clone(),
+        resolve: false,
+    })
+    .map_err(|e| e.to_string())?;
 
-    let meta: Metadata = serde_json::from_slice(&output.stdout)
-        .map_err(|e| format!("failed to parse cargo metadata: {e}"))?;
-
-    let packages = meta.packages.iter().filter_map(package_from_meta).collect();
-
+    let packages = ws.members.iter().filter_map(package_from).collect();
     Ok(Workspace {
-        root: PathBuf::from(meta.workspace_root),
+        root: ws.root,
         packages,
     })
 }
 
-fn package_from_meta(p: &MetaPackage) -> Option<Package> {
-    let crate_root = pick_crate_root(&p.targets)?;
-    let src_dir = crate_root.parent()?.to_path_buf();
-    let manifest_dir = Path::new(&p.manifest_path).parent()?.to_path_buf();
-    let deps = p
-        .dependencies
-        .iter()
-        .map(|d| Dep {
-            name: d.name.clone(),
-            rename: d.rename.clone(),
-            req: d.req.clone(),
-            features: d.features.clone(),
-            normal: d.kind.is_none(), // dev/build deps carry a "kind"; normal is null
-        })
-        .collect();
+/// Adapt a portside member — skipping any without a crate root (nothing we
+/// could lift a module out of).
+fn package_from(p: &portside::Package) -> Option<Package> {
+    let crate_root = p.crate_root()?.to_path_buf();
+    let src_dir = p.src_dir()?.to_path_buf();
     Some(Package {
         name: p.name.clone(),
-        manifest_dir,
+        manifest_dir: p.manifest_dir.clone(),
         crate_root,
         src_dir,
-        edition: p.edition.clone().unwrap_or_else(|| "2021".to_string()),
+        edition: p.edition.clone(),
         license: p.license.clone(),
-        deps,
+        deps: p.dependencies.iter().map(dep_from).collect(),
     })
 }
 
-/// The crate root: the lib target if there is one, else the first bin target.
-fn pick_crate_root(targets: &[MetaTarget]) -> Option<PathBuf> {
-    let is = |t: &&MetaTarget, kind: &str| t.kind.iter().any(|k| k == kind);
-    let lib = targets.iter().find(|t| is(t, "lib"));
-    let bin = targets.iter().find(|t| is(t, "bin"));
-    lib.or(bin).map(|t| PathBuf::from(&t.src_path))
-}
-
-// --- cargo metadata JSON (only the fields we use) -----------------------
-
-#[derive(Deserialize)]
-struct Metadata {
-    packages: Vec<MetaPackage>,
-    workspace_root: String,
-}
-
-#[derive(Deserialize)]
-struct MetaPackage {
-    name: String,
-    manifest_path: String,
-    #[serde(default)]
-    edition: Option<String>,
-    #[serde(default)]
-    license: Option<String>,
-    targets: Vec<MetaTarget>,
-    #[serde(default)]
-    dependencies: Vec<MetaDependency>,
-}
-
-#[derive(Deserialize)]
-struct MetaTarget {
-    kind: Vec<String>,
-    src_path: String,
-}
-
-#[derive(Deserialize)]
-struct MetaDependency {
-    name: String,
-    req: String,
-    #[serde(default)]
-    features: Vec<String>,
-    #[serde(default)]
-    rename: Option<String>,
-    #[serde(default)]
-    kind: Option<String>,
+fn dep_from(d: &portside::Dependency) -> Dep {
+    Dep {
+        name: d.name.clone(),
+        rename: d.rename.clone(),
+        req: d.req.clone(),
+        features: d.features.clone(),
+        normal: d.is_normal(),
+    }
 }

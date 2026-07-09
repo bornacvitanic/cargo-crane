@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.0] - 2026-07-09
+
+### Updates
+
+- Update cargo-crane to discover the workspace via the shared portside core
+
+Replace the hand-rolled `cargo metadata` parsing with the published `portside`
+crate (workspace discovery), dropping the serde / serde_json dependencies.
+Behaviour is unchanged — cargo-crane is the first tool to build on the shared
+core.
+
 ## [0.1.0] - 2026-07-09
 
 ### Features
